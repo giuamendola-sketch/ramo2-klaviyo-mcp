@@ -286,7 +286,7 @@ async function startMCPServer() {
     console.log(`\n[Iteration ${iteration}]`);
 
     const response = await client.messages.create({
-      model: "claude-opus-4-20250805",
+      model: "claude-3-5-sonnet-20241022",
       max_tokens: 4096,
       tools: tools,
       messages: messages,
