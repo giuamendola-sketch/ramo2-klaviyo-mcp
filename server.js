@@ -1,4 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
 import axios from "axios";
 import dotenv from "dotenv";
 
@@ -169,7 +168,7 @@ async function processToolCall(toolName, toolInput) {
 }
 
 // ============================================
-// MCP SERVER
+// MCP STDIO SERVER (Claude Desktop compatible)
 // ============================================
 
 const tools = [
@@ -259,82 +258,104 @@ const tools = [
   },
 ];
 
-async function startMCPServer() {
-  const client = new Anthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY,
-  });
+// ============================================
+// STDIO MESSAGE HANDLER (MCP Protocol)
+// ============================================
 
-  console.log("🚀 MCP Server starting...");
-  console.log(`📍 Store: ${SHOPIFY_STORE}`);
-  console.log(`🔑 Klaviyo API: Connected`);
-  console.log(`🛒 Shopify API: Connected`);
-  console.log(`⚙️  Available tools: ${tools.length}`);
-
-  const messages = [
-    {
-      role: "user",
-      content:
-        "You are an autonomous marketing agent for Ramo2 furniture brand. You have access to Klaviyo and Shopify APIs. Your job is to analyze campaign performance and provide recommendations. What would you recommend this week for email marketing optimization?",
-    },
-  ];
-
-  let iteration = 0;
-  const maxIterations = 10;
-
-  while (iteration < maxIterations) {
-    iteration++;
-    console.log(`\n[Iteration ${iteration}]`);
-
-    const response = await client.messages.create({
-      model: "claude-3-5-sonnet-20241022",
-      max_tokens: 4096,
-      tools: tools,
-      messages: messages,
-    });
-
-    console.log(`Stop reason: ${response.stop_reason}`);
-
-    messages.push({
-      role: "assistant",
-      content: response.content,
-    });
-
-    if (response.stop_reason === "end_turn") {
-      console.log("\n✅ Agent completed analysis");
-      console.log("\n📧 Recommendations:");
-      for (const block of response.content) {
-        if (block.type === "text") {
-          console.log(block.text);
-        }
-      }
-      break;
+async function handleStdioMessage(message) {
+  try {
+    if (message.jsonrpc === "2.0" && message.method === "tools/call") {
+      const result = await processToolCall(
+        message.params.name,
+        message.params.arguments
+      );
+      return {
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          type: "text",
+          text: result,
+        },
+      };
     }
 
-    if (response.stop_reason === "tool_use") {
-      const toolResults = [];
-
-      for (const block of response.content) {
-        if (block.type === "tool_use") {
-          console.log(`🔧 Tool: ${block.name}`);
-          const result = await processToolCall(block.name, block.input);
-          console.log(`✓ Result: ${result.substring(0, 100)}...`);
-
-          toolResults.push({
-            type: "tool_result",
-            tool_use_id: block.id,
-            content: result,
-          });
-        }
-      }
-
-      messages.push({
-        role: "user",
-        content: toolResults,
-      });
+    if (message.jsonrpc === "2.0" && message.method === "initialize") {
+      return {
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          serverInfo: {
+            name: "ramo2-klaviyo-mcp",
+            version: "1.0.0",
+          },
+        },
+      };
     }
+
+    if (message.jsonrpc === "2.0" && message.method === "resources/list") {
+      return {
+        jsonrpc: "2.0",
+        id: message.id,
+        result: { resources: [] },
+      };
+    }
+
+    if (message.jsonrpc === "2.0" && message.method === "tools/list") {
+      return {
+        jsonrpc: "2.0",
+        id: message.id,
+        result: { tools },
+      };
+    }
+
+    return {
+      jsonrpc: "2.0",
+      id: message.id,
+      error: { code: -32601, message: "Method not found" },
+    };
+  } catch (error) {
+    return {
+      jsonrpc: "2.0",
+      id: message.id,
+      error: { code: -32603, message: error.message },
+    };
   }
-
-  console.log("\n🏁 MCP Server completed");
 }
 
-startMCPServer().catch(console.error);
+// ============================================
+// START SERVER
+// ============================================
+
+console.log("🚀 MCP Server starting (stdio mode)...");
+console.log(`📍 Store: ${SHOPIFY_STORE}`);
+console.log(`🔑 Klaviyo API: Ready`);
+console.log(`🛒 Shopify API: Ready`);
+console.log(`⚙️  Available tools: ${tools.length}\n`);
+
+let buffer = "";
+
+process.stdin.on("data", async (chunk) => {
+  buffer += chunk.toString();
+
+  const lines = buffer.split("\n");
+  buffer = lines.pop() || "";
+
+  for (const line of lines) {
+    if (line.trim()) {
+      try {
+        const message = JSON.parse(line);
+        const response = await handleStdioMessage(message);
+        process.stdout.write(JSON.stringify(response) + "\n");
+      } catch (error) {
+        console.error("Error processing message:", error);
+      }
+    }
+  }
+});
+
+process.stdin.on("end", () => {
+  console.log("MCP Server closed");
+  process.exit(0);
+});
