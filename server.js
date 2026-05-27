@@ -1,11 +1,13 @@
 import axios from "axios";
 import dotenv from "dotenv";
+import http from "http";
 
 dotenv.config();
 
 const KLAVIYO_API_KEY = process.env.KLAVIYO_API_KEY;
 const SHOPIFY_ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
 const SHOPIFY_STORE = process.env.SHOPIFY_STORE;
+const PORT = process.env.PORT || 3000;
 
 // ============================================
 // KLAVIYO API CLIENT
@@ -38,27 +40,27 @@ const shopifyAPI = axios.create({
 async function getKlaviyoLists() {
   try {
     const response = await klaviyoAPI.get("/lists");
-    return JSON.stringify(response.data);
+    return response.data;
   } catch (error) {
-    return JSON.stringify({ error: error.message });
+    return { error: error.message };
   }
 }
 
 async function getKlaviyoSegments() {
   try {
     const response = await klaviyoAPI.get("/segments");
-    return JSON.stringify(response.data);
+    return response.data;
   } catch (error) {
-    return JSON.stringify({ error: error.message });
+    return { error: error.message };
   }
 }
 
 async function getKlaviyoFlows() {
   try {
     const response = await klaviyoAPI.get("/flows");
-    return JSON.stringify(response.data);
+    return response.data;
   } catch (error) {
-    return JSON.stringify({ error: error.message });
+    return { error: error.message };
   }
 }
 
@@ -74,9 +76,9 @@ async function createEmailTemplate(name, subject, html_content) {
         },
       },
     });
-    return JSON.stringify(response.data);
+    return response.data;
   } catch (error) {
-    return JSON.stringify({ error: error.message });
+    return { error: error.message };
   }
 }
 
@@ -92,9 +94,9 @@ async function createFlow(name, trigger, description) {
         },
       },
     });
-    return JSON.stringify(response.data);
+    return response.data;
   } catch (error) {
-    return JSON.stringify({ error: error.message });
+    return { error: error.message };
   }
 }
 
@@ -103,9 +105,9 @@ async function getShopifyProducts(limit = 50) {
     const response = await shopifyAPI.get("/products.json", {
       params: { limit },
     });
-    return JSON.stringify(response.data);
+    return response.data;
   } catch (error) {
-    return JSON.stringify({ error: error.message });
+    return { error: error.message };
   }
 }
 
@@ -114,21 +116,9 @@ async function getKlaviyoCampaignStats(days = 7) {
     const response = await klaviyoAPI.get("/campaigns", {
       params: { limit: 20 },
     });
-    return JSON.stringify(response.data);
+    return response.data;
   } catch (error) {
-    return JSON.stringify({ error: error.message });
-  }
-}
-
-async function syncShopifyProductsToKlaviyo() {
-  try {
-    const products = await getShopifyProducts(100);
-    return JSON.stringify({
-      status: "syncing",
-      message: "Products sync started",
-    });
-  } catch (error) {
-    return JSON.stringify({ error: error.message });
+    return { error: error.message };
   }
 }
 
@@ -160,15 +150,13 @@ async function processToolCall(toolName, toolInput) {
       return await getShopifyProducts(toolInput.limit || 50);
     case "get_klaviyo_campaign_stats":
       return await getKlaviyoCampaignStats(toolInput.days || 7);
-    case "sync_shopify_products_to_klaviyo":
-      return await syncShopifyProductsToKlaviyo();
     default:
-      return JSON.stringify({ error: `Unknown tool: ${toolName}` });
+      return { error: `Unknown tool: ${toolName}` };
   }
 }
 
 // ============================================
-// MCP STDIO SERVER (Claude Desktop compatible)
+// HTTP SERVER (MCP Protocol over HTTP)
 // ============================================
 
 const tools = [
@@ -247,115 +235,58 @@ const tools = [
       required: [],
     },
   },
-  {
-    name: "sync_shopify_products_to_klaviyo",
-    description: "Sync Shopify products to Klaviyo catalog",
-    input_schema: {
-      type: "object",
-      properties: {},
-      required: [],
-    },
-  },
 ];
 
-// ============================================
-// STDIO MESSAGE HANDLER (MCP Protocol)
-// ============================================
+const server = http.createServer(async (req, res) => {
+  res.setHeader("Content-Type", "application/json");
 
-async function handleStdioMessage(message) {
-  try {
-    if (message.jsonrpc === "2.0" && message.method === "tools/call") {
-      const result = await processToolCall(
-        message.params.name,
-        message.params.arguments
-      );
-      return {
-        jsonrpc: "2.0",
-        id: message.id,
-        result: {
-          type: "text",
-          text: result,
-        },
-      };
-    }
-
-    if (message.jsonrpc === "2.0" && message.method === "initialize") {
-      return {
-        jsonrpc: "2.0",
-        id: message.id,
-        result: {
-          protocolVersion: "2024-11-05",
-          capabilities: {},
-          serverInfo: {
-            name: "ramo2-klaviyo-mcp",
-            version: "1.0.0",
-          },
-        },
-      };
-    }
-
-    if (message.jsonrpc === "2.0" && message.method === "resources/list") {
-      return {
-        jsonrpc: "2.0",
-        id: message.id,
-        result: { resources: [] },
-      };
-    }
-
-    if (message.jsonrpc === "2.0" && message.method === "tools/list") {
-      return {
-        jsonrpc: "2.0",
-        id: message.id,
-        result: { tools },
-      };
-    }
-
-    return {
-      jsonrpc: "2.0",
-      id: message.id,
-      error: { code: -32601, message: "Method not found" },
-    };
-  } catch (error) {
-    return {
-      jsonrpc: "2.0",
-      id: message.id,
-      error: { code: -32603, message: error.message },
-    };
+  if (req.url === "/tools" && req.method === "GET") {
+    res.writeHead(200);
+    res.end(JSON.stringify({ tools }));
+    return;
   }
-}
 
-// ============================================
-// START SERVER
-// ============================================
-
-console.log("🚀 MCP Server starting (stdio mode)...");
-console.log(`📍 Store: ${SHOPIFY_STORE}`);
-console.log(`🔑 Klaviyo API: Ready`);
-console.log(`🛒 Shopify API: Ready`);
-console.log(`⚙️  Available tools: ${tools.length}\n`);
-
-let buffer = "";
-
-process.stdin.on("data", async (chunk) => {
-  buffer += chunk.toString();
-
-  const lines = buffer.split("\n");
-  buffer = lines.pop() || "";
-
-  for (const line of lines) {
-    if (line.trim()) {
+  if (req.url === "/call" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk.toString()));
+    req.on("end", async () => {
       try {
-        const message = JSON.parse(line);
-        const response = await handleStdioMessage(message);
-        process.stdout.write(JSON.stringify(response) + "\n");
+        const { toolName, toolInput } = JSON.parse(body);
+        const result = await processToolCall(toolName, toolInput);
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, result }));
       } catch (error) {
-        console.error("Error processing message:", error);
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, error: error.message }));
       }
-    }
+    });
+    return;
   }
+
+  if (req.url === "/" && req.method === "GET") {
+    res.writeHead(200);
+    res.end(
+      JSON.stringify({
+        status: "ok",
+        server: "ramo2-klaviyo-mcp",
+        tools: tools.length,
+      })
+    );
+    return;
+  }
+
+  res.writeHead(404);
+  res.end(JSON.stringify({ error: "Not found" }));
 });
 
-process.stdin.on("end", () => {
-  console.log("MCP Server closed");
-  process.exit(0);
+server.listen(PORT, () => {
+  console.log(`🚀 MCP HTTP Server listening on port ${PORT}`);
+  console.log(`📍 Store: ${SHOPIFY_STORE}`);
+  console.log(`🔑 Klaviyo API: Ready`);
+  console.log(`🛒 Shopify API: Ready`);
+  console.log(`⚙️  Available tools: ${tools.length}`);
+  console.log(`\n📝 Endpoints:`);
+  console.log(`  GET  / - Server status`);
+  console.log(`  GET  /tools - List available tools`);
+  console.log(`  POST /call - Execute a tool`);
 });
